@@ -6,7 +6,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 from tqdm import tqdm
 
@@ -14,110 +14,341 @@ from json_stream import iter_json_array
 from question_utils import classify_question_type, classify_reference_style, iter_human_questions
 
 BASE_SYSTEM_PROMPT = """You are a data labeling assistant for spatial reasoning.
-Extract only the minimal set of words or short phrases from the question that are useful for solving the task.
+Extract structured signals from the question for downstream training.
+
+Return JSON only with this schema:
+{
+  "selected_tokens": ["..."],
+  "selected_mentions": ["..."],
+  "spatial_terms": ["..."]
+}
 
 Shared rules:
-- Return JSON only, with the format {"terms": ["term1", "term2"]}.
-- Keep short terms or short phrases up to 3 words.
+- `selected_tokens`: short tokens or short phrases up to 3 words.
+- `selected_mentions`: full object mentions or referring expressions from the question.
+- `spatial_terms`: only spatial, directional, viewpoint, distance, or measurement terms.
 - No duplicates.
-- Ignore placeholders such as <image>, <video>, and generic narration.
+- Ignore placeholders such as <image> and <video>.
 - Ignore answer-choice letters and output-format instructions.
-- If the question is not useful for spatial reasoning, return {"terms": []}.
-- Preserve object identifiers exactly when they matter, for example Object77 or Frame-16.
+- If a field has no useful content, return an empty list for that field.
+- Preserve object IDs and frame IDs exactly when they matter, for example `Object77` or `Frame-16`.
 """
 
 TYPE_SPECIFIC_PROMPTS = {
     "distance_depth": """Question task type: distance_depth.
 Prioritize:
-- Target objects and reference objects.
-- Distance, depth, center, coordinate, BEV, meter-like units.
-- Observer or viewpoint terms when they define the measurement reference.
+- target objects and reference objects
+- distance, depth, center, coordinate, BEV, meter-like units
+- observer or viewpoint terms when they define the measurement reference
 Avoid:
-- Option letters, standalone choice numbers, and generic verbs such as calculate or choose.
+- option letters, standalone choice numbers, and generic verbs such as calculate or choose
 """,
     "bbox_localization": """Question task type: bbox_localization.
 Prioritize:
-- Target object names and reference object names.
-- bounding box, bbox, first/second/third image, and any identifying color tags.
+- target object names and reference object names
+- bounding box, bbox, first/second/third image, and identifying color tags
 Avoid:
-- Generic instruction verbs such as locate, find, draw, provide, annotate, or enclose.
+- generic instruction verbs such as locate, find, draw, provide, annotate, or enclose
 """,
     "relative_position": """Question task type: relative_position.
 Prioritize:
-- Object names.
-- Observer, viewpoint, perspective, position, movement, orientation.
-- Direction and relation terms such as left, right, above, below, between, in front of, behind, near, far, closer, farther.
+- object names
+- observer, viewpoint, perspective, position, movement, orientation
+- direction and relation terms such as left, right, above, below, between, in front of, behind, near, far, closer, farther
 Avoid:
-- Output-format instructions and answer-choice letters.
+- output-format instructions and answer-choice letters
 """,
     "other": """Question task type: other.
-Only keep terms if they are clearly useful for spatial reasoning. Otherwise return {"terms": []}.
+Only keep terms if they are clearly useful for spatial reasoning. Otherwise return empty lists.
 """,
 }
 
 REFERENCE_STYLE_PROMPTS = {
     "named_color_reference": """Object reference style: named_color_reference.
-Objects are usually written as noun phrases followed by a color marker, for example wardrobe (red point) or power socket (blue point).
-Keep the actual object names and useful marker phrases when they help disambiguate the objects.
+Objects are usually written as noun phrases followed by a color marker, for example `wardrobe (red point)` or `power socket (blue point)`.
+In `selected_mentions`, keep the full mention.
+In `selected_tokens`, keep the object name and useful marker tokens.
 """,
     "object_id_reference": """Object reference style: object_id_reference.
-Objects may be referred to only by IDs such as Object77 or Object0.
-Keep these object IDs exactly as written. Do not invent missing object names.
+Objects may be referred to by IDs such as `Object77` or mixed forms such as `window (Object2)`.
+In `selected_mentions`, keep the full mention when available.
+In `selected_tokens`, preserve object IDs exactly.
+Do not invent missing object names.
 """,
     "frame_object_reference": """Object reference style: frame_object_reference.
-Objects may be written in detailed video form such as tv (in Frame-16, Object0) (green bbox).
-Keep the object name, frame ID, object ID, and color marker when they are needed to identify the object.
+Objects may be written in detailed video form such as `tv (in Frame-16, Object0) (green bbox)`.
+In `selected_mentions`, keep the full mention.
+In `selected_tokens`, preserve the object name, frame ID, object ID, and color marker when they identify the object.
 """,
     "plain_object_reference": """Object reference style: plain_object_reference.
 Use the best available noun phrases that identify the objects.
 """,
 }
 
+COLOR_PATTERN = r"(?:red|blue|green|yellow|orange|purple|pink|white|black|brown|gray|grey)"
+OBJECT_NAME_PATTERN = r"[A-Za-z][A-Za-z0-9'/-]*(?:\s+[A-Za-z][A-Za-z0-9'/-]*){0,4}"
+
 SPATIAL_TERMS = {
-    "left", "right", "above", "below", "under", "over", "behind", "front", "forward", "backward",
-    "between", "inside", "outside", "near", "far", "closest", "farthest", "top", "bottom", "center",
-    "middle", "north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest",
-    "around", "across", "toward", "away", "adjacent", "next", "beside", "opposite", "distance",
-    "meter", "meters", "m", "cm", "mm", "km", "foot", "feet", "inch", "inches", "degree", "degrees",
-    "coordinate", "coordinates", "axis", "origin", "bev", "horizontal", "vertical", "position", "relative",
-    "movement", "perspective", "direction", "location", "first", "second", "third", "depth", "bbox",
+    "above",
+    "across",
+    "adjacent",
+    "around",
+    "away",
+    "axis",
+    "backward",
+    "behind",
+    "below",
+    "beside",
+    "bev",
+    "between",
+    "bottom",
+    "center",
+    "closest",
+    "closer",
+    "coordinate",
+    "coordinates",
+    "degree",
+    "degrees",
+    "depth",
+    "direction",
+    "distance",
+    "east",
+    "farthest",
+    "farther",
+    "far",
+    "feet",
+    "foot",
+    "forward",
+    "front",
+    "horizontal",
+    "inch",
+    "inches",
+    "inside",
+    "km",
+    "left",
+    "location",
+    "m",
+    "meter",
+    "meters",
+    "middle",
+    "mm",
+    "movement",
+    "near",
+    "north",
+    "northeast",
+    "northwest",
+    "opposite",
+    "origin",
+    "outside",
+    "over",
+    "perspective",
+    "position",
+    "relative",
+    "right",
+    "south",
+    "southeast",
+    "southwest",
+    "top",
+    "toward",
+    "under",
+    "vertical",
+    "viewpoint",
+    "west",
 }
 
 COMMON_STOPWORDS = {
-    "a", "an", "the", "is", "are", "was", "were", "be", "being", "been", "to", "of", "in", "on", "at",
-    "for", "from", "by", "with", "without", "and", "or", "that", "this", "these", "those", "what", "which",
-    "who", "whom", "when", "where", "why", "how", "do", "does", "did", "can", "could", "would", "should",
-    "may", "might", "will", "shall", "it", "its", "their", "there", "then", "than", "as", "if", "into",
-    "about", "please", "according", "provided", "image", "images", "video", "videos", "main", "viewpoint",
+    "a",
+    "about",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "being",
+    "by",
+    "can",
+    "could",
+    "did",
+    "do",
+    "does",
+    "for",
+    "from",
+    "how",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "may",
+    "might",
+    "of",
+    "on",
+    "or",
+    "shall",
+    "should",
+    "than",
+    "that",
+    "the",
+    "their",
+    "then",
+    "there",
+    "these",
+    "this",
+    "those",
+    "to",
+    "was",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "whom",
+    "why",
+    "will",
+    "with",
+    "without",
+    "would",
 }
 
 GENERIC_NON_OBJECT = {
-    "describe", "calculate", "judge", "output", "include", "maintain", "construct", "designate", "using",
-    "rules", "format", "example", "transition", "required", "provided", "please", "show", "tell", "given",
-    "judge", "based", "exact", "line", "separate", "select", "choose", "answer", "option", "options",
-    "locate", "find", "provide", "annotate", "mark", "draw", "report", "determine", "predict", "estimate",
-    "object", "objects", "frame", "frames",
+    "according",
+    "annotate",
+    "answer",
+    "based",
+    "calculate",
+    "choose",
+    "construct",
+    "describe",
+    "determine",
+    "draw",
+    "enclose",
+    "estimate",
+    "exact",
+    "example",
+    "find",
+    "format",
+    "given",
+    "include",
+    "judge",
+    "line",
+    "locate",
+    "maintain",
+    "option",
+    "options",
+    "output",
+    "please",
+    "predict",
+    "provide",
+    "provided",
+    "report",
+    "required",
+    "rules",
+    "select",
+    "separate",
+    "show",
+    "tell",
+    "unit",
+    "using",
 }
 
-SPECIAL_PHRASES = {
-    "bounding box": "bounding box",
-    "observer's perspective": "observer perspective",
-    "observer perspective": "observer perspective",
-    "world coordinate system": "world coordinate system",
+SPATIAL_PHRASES = {
     "bird's-eye view": "bev",
     "bird’s-eye view": "bev",
+    "bounding box": "bounding box",
     "center point": "center",
+    "in front of": "in front of",
+    "observer's perspective": "observer perspective",
+    "observer's position": "observer position",
+    "observer perspective": "observer perspective",
+    "world coordinate system": "world coordinate system",
 }
+
+MENTION_PATTERNS = [
+    re.compile(
+        rf"{OBJECT_NAME_PATTERN}\s*\(\s*in\s+Frame-\d+\s*,\s*Object\d+\s*\)\s*\(\s*{COLOR_PATTERN}\s+(?:bbox|point|box|marker)\s*\)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{OBJECT_NAME_PATTERN}\s*\(\s*in\s+Frame-\d+\s*,\s*Object\d+\s*\)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{OBJECT_NAME_PATTERN}\s*\(\s*Object\d+\s*\)\s*\(\s*{COLOR_PATTERN}\s+(?:bbox|point|box|marker)\s*\)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{OBJECT_NAME_PATTERN}\s*\(\s*Object\d+\s*\)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"Object\d+\s*\(\s*{COLOR_PATTERN}\s+(?:bbox|point|box|marker)\s*\)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{OBJECT_NAME_PATTERN}\s*\(\s*in\s+Frame-\d+\s*\)\s*\(\s*{COLOR_PATTERN}\s+(?:bbox|point|box|marker)\s*\)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{OBJECT_NAME_PATTERN}\s*\(\s*in\s+Frame-\d+\s*\)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{OBJECT_NAME_PATTERN}\s*\(\s*{COLOR_PATTERN}\s+(?:bbox|point|box|marker)\s*\)",
+        re.IGNORECASE,
+    ),
+]
 
 FRAME_TOKEN_PATTERN = re.compile(r"frame-\d+", re.IGNORECASE)
 OBJECT_TOKEN_PATTERN = re.compile(r"object\d+", re.IGNORECASE)
 TOKEN_PATTERN = r"frame-\d+|object\d+|[a-z]+(?:'[a-z]+)?\d*|\d+(?:\.\d+)?(?:m|cm|mm|km|ft|feet|inch|inches)?"
 UNIT_PATTERN = r"\d+(?:\.\d+)?(?:m|cm|mm|km|ft|feet|inch|inches)"
+MENTION_BOUNDARY_WORDS = {
+    "a",
+    "an",
+    "and",
+    "approximate",
+    "at",
+    "becomes",
+    "calculate",
+    "center",
+    "compare",
+    "depth",
+    "describe",
+    "determine",
+    "distance",
+    "estimate",
+    "from",
+    "how",
+    "in",
+    "is",
+    "located",
+    "of",
+    "on",
+    "points",
+    "relative",
+    "shifts",
+    "specifies",
+    "the",
+    "to",
+    "toward",
+    "use",
+    "using",
+    "what",
+    "when",
+    "where",
+    "with",
+}
 
 
 @dataclass
 class SelectionResult:
-    terms: List[str]
+    selected_tokens: List[str]
+    selected_mentions: List[str]
+    spatial_terms: List[str]
     method: str
     error: Optional[str] = None
 
@@ -137,7 +368,7 @@ def build_user_prompt(question: str, question_type: str, reference_style: str) -
         f"Question task type: {question_type}\n"
         f"Object reference style: {reference_style}\n"
         f"Question: {question}\n\n"
-        "Return only JSON with a terms array."
+        "Return only JSON with selected_tokens, selected_mentions, and spatial_terms."
     )
 
 
@@ -151,7 +382,7 @@ def unique_preserve_order(values: Iterable[str]) -> List[str]:
     return out
 
 
-def normalize_terms(raw_terms: Iterable[str], max_terms: int) -> List[str]:
+def normalize_token_list(raw_terms: Iterable[str], max_terms: int) -> List[str]:
     terms = []
     for term in raw_terms:
         if not isinstance(term, str):
@@ -164,12 +395,149 @@ def normalize_terms(raw_terms: Iterable[str], max_terms: int) -> List[str]:
         if len(clean.split()) > 3:
             continue
         terms.append(clean)
-
-    deduped = unique_preserve_order(terms)
-    return deduped[:max_terms]
+    return unique_preserve_order(terms)[:max_terms]
 
 
-def parse_terms_payload(text: str, max_terms: int) -> List[str]:
+def normalize_mention_list(raw_mentions: Iterable[str], max_terms: int) -> List[str]:
+    mentions = []
+    for mention in raw_mentions:
+        if not isinstance(mention, str):
+            continue
+        clean = mention.strip()
+        clean = re.sub(r"\s+", " ", clean)
+        clean = clean.strip(" ,.;:")
+        if not clean:
+            continue
+        mentions.append(clean)
+    return unique_preserve_order(mentions)[:max_terms]
+
+
+def compact_mention_text(mention: str) -> str:
+    mention = re.sub(r"\s+", " ", mention).strip(" ,.;:")
+    paren_index = mention.find("(")
+    if paren_index < 0:
+        return mention
+
+    name_part = mention[:paren_index].strip()
+    suffix = mention[paren_index:].strip()
+
+    tokens = name_part.split()
+    start_index = 0
+    for index, token in enumerate(tokens):
+        cleaned = token.lower().strip(",.;:")
+        if cleaned in MENTION_BOUNDARY_WORDS:
+            start_index = index + 1
+
+    core_tokens = tokens[start_index:]
+    while core_tokens and core_tokens[0].lower().strip(",.;:") in {"the", "a", "an"}:
+        core_tokens.pop(0)
+
+    if core_tokens:
+        name_part = " ".join(core_tokens)
+
+    compact = f"{name_part} {suffix}".strip()
+    compact = re.sub(r"\s+", " ", compact)
+    return compact.strip(" ,.;:")
+
+
+def overlap(a: Tuple[int, int], b: Tuple[int, int]) -> bool:
+    return not (a[1] <= b[0] or b[1] <= a[0])
+
+
+def extract_mentions(question: str) -> List[str]:
+    matches: List[Tuple[int, int, str]] = []
+    occupied: List[Tuple[int, int]] = []
+
+    for pattern in MENTION_PATTERNS:
+        for match in pattern.finditer(question):
+            span = match.span()
+            if any(overlap(span, other) for other in occupied):
+                continue
+            occupied.append(span)
+            matches.append((span[0], span[1], compact_mention_text(match.group(0))))
+
+    matches.sort(key=lambda item: item[0])
+    return normalize_mention_list((text for _, _, text in matches), max_terms=9999)
+
+
+def spatial_terms_from_question(question: str, max_terms: int) -> List[str]:
+    q = question.lower()
+    selected = []
+
+    for raw_phrase, normalized_phrase in SPATIAL_PHRASES.items():
+        if raw_phrase in q:
+            selected.append(normalized_phrase)
+
+    tokens = re.findall(TOKEN_PATTERN, q)
+    for token in tokens:
+        if re.fullmatch(UNIT_PATTERN, token):
+            selected.append(token)
+            continue
+        if token in SPATIAL_TERMS:
+            selected.append(token)
+
+    return normalize_token_list(selected, max_terms)
+
+
+def tokens_from_mentions(mentions: Sequence[str], max_terms: int) -> List[str]:
+    selected = []
+    for mention in mentions:
+        lowered = mention.lower()
+        tokens = re.findall(TOKEN_PATTERN, lowered)
+        for token in tokens:
+            if token in COMMON_STOPWORDS:
+                continue
+            if FRAME_TOKEN_PATTERN.fullmatch(token):
+                selected.append(token)
+                continue
+            if OBJECT_TOKEN_PATTERN.fullmatch(token):
+                selected.append(token)
+                continue
+            if re.fullmatch(UNIT_PATTERN, token):
+                selected.append(token)
+                continue
+            if token in SPATIAL_TERMS:
+                selected.append(token)
+                continue
+            if token in GENERIC_NON_OBJECT:
+                continue
+            if len(token) <= 2 and token not in {"m", "cm", "mm", "km"}:
+                continue
+            selected.append(token)
+    return normalize_token_list(selected, max_terms)
+
+
+def heuristic_fallback(question: str, question_type: str, reference_style: str, max_terms: int) -> SelectionResult:
+    mentions = extract_mentions(question)
+    spatial_terms = spatial_terms_from_question(question, max_terms)
+    mention_tokens = tokens_from_mentions(mentions, max_terms)
+
+    fallback_tokens = []
+    if not mentions:
+        raw_tokens = re.findall(TOKEN_PATTERN, question.lower())
+        for token in raw_tokens:
+            if token in COMMON_STOPWORDS or token in GENERIC_NON_OBJECT:
+                continue
+            if len(token) <= 2 and token not in {"m", "cm", "mm", "km"}:
+                continue
+            if question_type != "distance_depth" and re.fullmatch(r"\d+(?:\.\d+)?", token):
+                continue
+            fallback_tokens.append(token)
+
+    selected_tokens = normalize_token_list(
+        list(mention_tokens) + list(spatial_terms) + list(fallback_tokens),
+        max_terms,
+    )
+
+    return SelectionResult(
+        selected_tokens=selected_tokens,
+        selected_mentions=normalize_mention_list(mentions, max_terms),
+        spatial_terms=spatial_terms,
+        method="heuristic_only",
+    )
+
+
+def parse_structured_payload(text: str, max_terms: int) -> Tuple[List[str], List[str], List[str]]:
     payload = text.strip()
 
     if payload.startswith("```"):
@@ -181,72 +549,25 @@ def parse_terms_payload(text: str, max_terms: int) -> List[str]:
         obj = json.loads(payload)
     except json.JSONDecodeError:
         obj_match = re.search(r"\{[\s\S]*\}", payload)
-        arr_match = re.search(r"\[[\s\S]*\]", payload)
         if obj_match:
             obj = json.loads(obj_match.group(0))
-        elif arr_match:
-            obj = json.loads(arr_match.group(0))
 
-    if isinstance(obj, list):
-        return normalize_terms(obj, max_terms)
+    if not isinstance(obj, dict):
+        raise ValueError("Could not parse structured JSON from model response")
 
-    if isinstance(obj, dict):
-        for key in ("terms", "words", "selected_terms"):
-            value = obj.get(key)
-            if isinstance(value, list):
-                return normalize_terms(value, max_terms)
+    if "selected_tokens" in obj or "selected_mentions" in obj or "spatial_terms" in obj:
+        return (
+            normalize_token_list(obj.get("selected_tokens", []), max_terms),
+            normalize_mention_list(obj.get("selected_mentions", []), max_terms),
+            normalize_token_list(obj.get("spatial_terms", []), max_terms),
+        )
 
-    raise ValueError("Could not parse terms JSON from model response")
-
-
-def heuristic_select_terms(question: str, max_terms: int, question_type: str, reference_style: str) -> List[str]:
-    if question_type == "other":
-        return []
-
-    q = question.lower()
-    tokens = re.findall(TOKEN_PATTERN, q)
-
-    selected = []
-    for raw_phrase, normalized_phrase in SPECIAL_PHRASES.items():
-        if raw_phrase in q:
-            selected.append(normalized_phrase)
-
-    for token in tokens:
-        if token in COMMON_STOPWORDS or token in GENERIC_NON_OBJECT:
-            continue
-        if len(token) <= 2 and token not in {"m", "cm", "mm", "km"}:
-            continue
-
-        is_number = re.fullmatch(r"\d+(?:\.\d+)?", token) is not None
-        has_unit = re.fullmatch(UNIT_PATTERN, token) is not None
-        is_frame_token = FRAME_TOKEN_PATTERN.fullmatch(token) is not None
-        is_object_token = OBJECT_TOKEN_PATTERN.fullmatch(token) is not None
-
-        if is_frame_token and reference_style != "frame_object_reference":
-            continue
-        if is_object_token and reference_style not in {"object_id_reference", "frame_object_reference"}:
-            continue
-        if is_number and question_type != "distance_depth":
-            continue
-        if has_unit or token in SPATIAL_TERMS:
-            selected.append(token)
-            continue
-        if is_frame_token or is_object_token:
-            selected.append(token)
-            continue
-        if question_type == "bbox_localization" and token in {"bbox", "bounding", "box", "first", "second", "third"}:
-            selected.append(token)
-            continue
-        if question_type == "relative_position" and token in {"observer", "perspective", "position", "direction", "orientation"}:
-            selected.append(token)
-            continue
-        if question_type == "distance_depth" and token in {"depth", "distance", "center", "observer", "coordinate", "coordinates"}:
-            selected.append(token)
-            continue
-        if not is_number:
-            selected.append(token)
-
-    return normalize_terms(selected, max_terms)
+    legacy_terms = obj.get("terms") or obj.get("words") or obj.get("selected_terms") or []
+    return (
+        normalize_token_list(legacy_terms, max_terms),
+        [],
+        [],
+    )
 
 
 class LLMSelector:
@@ -280,10 +601,7 @@ class LLMSelector:
 
     def select(self, question: str, question_type: str, reference_style: str) -> SelectionResult:
         if self.heuristic_only:
-            return SelectionResult(
-                terms=heuristic_select_terms(question, self.max_terms, question_type, reference_style),
-                method="heuristic_only",
-            )
+            return heuristic_fallback(question, question_type, reference_style, self.max_terms)
 
         last_error = None
         for _ in range(self.retries + 1):
@@ -296,20 +614,24 @@ class LLMSelector:
                         {"role": "system", "content": build_system_prompt(question_type, reference_style)},
                         {"role": "user", "content": build_user_prompt(question, question_type, reference_style)},
                     ],
-                    max_tokens=200,
+                    max_tokens=300,
                 )
                 content = response.choices[0].message.content or ""
-                terms = parse_terms_payload(content, self.max_terms)
-                return SelectionResult(terms=terms, method="llm")
+                selected_tokens, selected_mentions, spatial_terms = parse_structured_payload(content, self.max_terms)
+                return SelectionResult(
+                    selected_tokens=selected_tokens,
+                    selected_mentions=selected_mentions,
+                    spatial_terms=spatial_terms,
+                    method="llm",
+                )
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
 
         if self.fallback_on_error:
-            return SelectionResult(
-                terms=heuristic_select_terms(question, self.max_terms, question_type, reference_style),
-                method="heuristic_fallback",
-                error=last_error,
-            )
+            result = heuristic_fallback(question, question_type, reference_style, self.max_terms)
+            result.method = "heuristic_fallback"
+            result.error = last_error
+            return result
 
         raise RuntimeError(f"LLM selection failed for question: {question}\nError: {last_error}")
 
@@ -339,7 +661,7 @@ class JsonArrayWriter:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Select spatial reasoning words from question turns.")
+    parser = argparse.ArgumentParser(description="Select structured spatial reasoning signals from question turns.")
     parser.add_argument("--inputs", nargs="+", required=True, help="Input JSON files")
     parser.add_argument("--output", required=True, help="Output JSON path")
     parser.add_argument("--model", default="Qwen/Qwen2.5-7B-Instruct", help="Model name for OpenAI-compatible endpoint")
@@ -347,11 +669,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default="EMPTY", help="API key for the endpoint")
     parser.add_argument("--timeout", type=float, default=120.0, help="Request timeout in seconds")
     parser.add_argument("--retries", type=int, default=1, help="Retry count per question on LLM errors")
-    parser.add_argument("--max-terms", type=int, default=20, help="Maximum terms to keep per question")
+    parser.add_argument("--max-terms", type=int, default=20, help="Maximum items to keep per output field")
     parser.add_argument("--max-records-per-file", type=int, default=None, help="Optional debug cap per input file")
     parser.add_argument("--chunk-size", type=int, default=1_048_576, help="Stream chunk size in bytes")
     parser.add_argument("--report-every", type=int, default=100, help="Print progress every N records")
-    parser.add_argument("--heuristic-only", action="store_true", help="Skip LLM calls and use heuristic selection")
+    parser.add_argument("--heuristic-only", action="store_true", help="Skip LLM calls and use heuristic extraction")
     parser.add_argument("--no-fallback", action="store_true", help="Disable heuristic fallback on LLM errors")
     return parser.parse_args()
 
@@ -402,7 +724,9 @@ def main() -> None:
                         "question": question,
                         "question_type": question_type,
                         "reference_style": reference_style,
-                        "selected_terms": result.terms,
+                        "selected_tokens": result.selected_tokens,
+                        "selected_mentions": result.selected_mentions,
+                        "spatial_terms": result.spatial_terms,
                         "method": result.method,
                     }
                     if result.error:

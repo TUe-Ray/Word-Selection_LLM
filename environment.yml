@@ -6,4 +6,5 @@ dependencies:
   - pip
   - tqdm
   - pip:
+      - huggingface_hub>=0.24.0
       - openai>=1.40.0
