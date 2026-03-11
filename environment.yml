@@ -1,0 +1,9 @@
+name: spatial-word-selection
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - tqdm
+  - pip:
+      - openai>=1.40.0
