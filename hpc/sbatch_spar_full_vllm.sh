@@ -1,24 +1,25 @@
 #!/bin/bash
-#SBATCH --job-name=ws_spar_full
+#SBATCH --job-name=spar-full
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --time=08:00:00
+#SBATCH --time=24:00:00
 #SBATCH --partition=boost_usr_prod
-#SBATCH --qos=boost_qos_bprod
-#SBATCH --output=logs/word_selection/%x_%j.out
-#SBATCH --error=logs/word_selection/%x_%j.err
-#SBATCH --mem=0
+#SBATCH --qos=normal
+#SBATCH --output=logs/train/%x_%j.out
+#SBATCH --error=logs/train/%x_%j.err
+#SBATCH --exclude=lrdn0249,lrdn0612,lrdn0568,lrdn2400,lrdn0288,lrdn0418,lrdn0119,lrdn0159,lrdn0080,lrdn0868,lrdn0808,lrdn0182,lrdn0680,lrdn0831,lrdn0084,lrdn0088,lrdn0186
+#SBATCH --exclusive
 
 set -euo pipefail
 
+export PROJECT_DIR="${PROJECT_DIR:-$SLURM_SUBMIT_DIR}"
+export INPUT_JSON="${INPUT_JSON:-$PROJECT_DIR/spar_234k.json}"
+export OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_words_spar_full_llm.json}"
 export RUN_MODE=full
-unset RUN_LIMIT
-export MODEL_DIR="${MODEL_DIR:-$FAST/hf_models/Qwen2.5-14B-Instruct}"
-export SERVE_MODEL_NAME="${SERVE_MODEL_NAME:-qwen14b}"
-export MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
-export GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
+export TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-4}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-bash "$SCRIPT_DIR/run_vllm_word_selection.sh"
+mkdir -p "$PROJECT_DIR/logs/train"
+
+bash "$PROJECT_DIR/hpc/run_vllm_word_selection.sh"
