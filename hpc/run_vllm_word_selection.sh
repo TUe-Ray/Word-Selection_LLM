@@ -22,6 +22,7 @@ TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-4}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.95}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if [[ "$RUN_MODE" == "preview" ]]; then
   OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_words_spar_preview50.json}"
@@ -36,6 +37,16 @@ fi
 
 nvidia-smi
 
+if ! singularity exec --nv \
+  --bind /leonardo_work/EUHPC_D32_006:/leonardo_work/EUHPC_D32_006 \
+  --bind "$PROJECT_DIR:$PROJECT_DIR" \
+  "$CONTAINER" \
+  bash -lc "command -v ${PYTHON_BIN}" >/dev/null 2>&1; then
+  echo "Python interpreter not found in container: ${PYTHON_BIN}" >&2
+  echo "Try setting PYTHON_BIN=python or PYTHON_BIN=/usr/bin/python3 in sbatch env." >&2
+  exit 1
+fi
+
 singularity exec --nv \
   --bind /leonardo_work/EUHPC_D32_006:/leonardo_work/EUHPC_D32_006 \
   --bind "$PROJECT_DIR:$PROJECT_DIR" \
@@ -44,7 +55,7 @@ singularity exec --nv \
   env HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
       VLLM_LOGGING_LEVEL="$VLLM_LOGGING_LEVEL" NCCL_DEBUG="$NCCL_DEBUG" \
       VLLM_ENABLE_CUDA_COMPATIBILITY=1 \
-  python "$PROJECT_DIR/scripts/select_spatial_words.py" \
+  "$PYTHON_BIN" "$PROJECT_DIR/scripts/select_spatial_words.py" \
     --inputs "$INPUT_JSON" \
     --output "$OUTPUT_JSON" \
     --model-path "$MODEL_PATH" \
