@@ -35,6 +35,9 @@ else
   exit 1
 fi
 
+echo "[runner] start_time=$(date '+%Y-%m-%d %H:%M:%S %Z')"
+echo "[runner] mode=$RUN_MODE model_path=$MODEL_PATH tp_size=$TENSOR_PARALLEL_SIZE batch_size=$BATCH_SIZE input=$INPUT_JSON output=$OUTPUT_JSON"
+
 nvidia-smi
 
 if ! singularity exec --nv \

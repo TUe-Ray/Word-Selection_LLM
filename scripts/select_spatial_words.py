@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Tuple
 
@@ -428,6 +429,8 @@ def main() -> int:
         tokenizer, llm = init_vllm(args)
 
     first_item = True
+    batch_counter = 0
+    processed_questions = 0
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write("[\n")
         for input_path in args.inputs:
@@ -435,10 +438,24 @@ def main() -> int:
             for sample in iter_samples(input_path, args.max_records_per_file):
                 batch.append(sample)
                 if len(batch) >= args.batch_size:
+                    batch_counter += 1
+                    processed_questions += len(batch)
+                    print(
+                        f"[progress] batch={batch_counter} processed_questions={processed_questions} input={input_path}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                     outputs = run_heuristic(batch) if args.heuristic_only else run_vllm_batch(batch, args, tokenizer, llm)
                     first_item = write_outputs(handle, outputs, first_item)
                     batch = []
             if batch:
+                batch_counter += 1
+                processed_questions += len(batch)
+                print(
+                    f"[progress] batch={batch_counter} processed_questions={processed_questions} input={input_path}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 outputs = run_heuristic(batch) if args.heuristic_only else run_vllm_batch(batch, args, tokenizer, llm)
                 first_item = write_outputs(handle, outputs, first_item)
         handle.write("\n]\n")
