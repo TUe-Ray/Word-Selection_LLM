@@ -14,6 +14,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNNER_SCRIPT="${SCRIPT_DIR}/run_vllm_word_selection.sh"
+
 export PROJECT_DIR="${PROJECT_DIR:-$SLURM_SUBMIT_DIR}"
 export INPUT_JSON="${INPUT_JSON:-$PROJECT_DIR/spar_234k.json}"
 export OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_words_spar_preview50.json}"
@@ -22,4 +25,9 @@ export TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-4}"
 
 mkdir -p "$PROJECT_DIR/logs/train"
 
-bash "$PROJECT_DIR/hpc/run_vllm_word_selection.sh"
+if [[ ! -f "$RUNNER_SCRIPT" ]]; then
+  echo "Runner script not found: $RUNNER_SCRIPT" >&2
+  exit 1
+fi
+
+bash "$RUNNER_SCRIPT"
