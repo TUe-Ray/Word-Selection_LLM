@@ -19,7 +19,7 @@ RUNNER_SCRIPT="${SCRIPT_DIR}/run_vllm_word_selection.sh"
 
 export PROJECT_DIR="${PROJECT_DIR:-$SLURM_SUBMIT_DIR}"
 export INPUT_JSON="${INPUT_JSON:-$PROJECT_DIR/spar_234k.json}"
-export OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_words_spar_preview50.json}"
+export OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_grounded_schema_spar_preview50.json}"
 export RUN_MODE=preview
 export TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-4}"
 

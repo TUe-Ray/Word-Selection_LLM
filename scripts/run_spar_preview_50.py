@@ -5,7 +5,7 @@ import sys
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run a 50-sample SPAR preview with direct vLLM batch inference."
+        description="Run a 50-sample SPAR preview with grounded-schema vLLM extraction."
     )
     parser.add_argument("--input", default="spar_234k.json")
     parser.add_argument("--output", default="selected_words_spar_preview50.json")
@@ -24,9 +24,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.heuristic_only:
+        raise ValueError("--heuristic-only is not supported by select_spatial_grounded_schema_llm_only.py.")
+
     cmd = [
         sys.executable,
-        "scripts/select_spatial_words.py",
+        "scripts/select_spatial_grounded_schema_llm_only.py",
         "--inputs",
         args.input,
         "--output",
@@ -35,26 +38,23 @@ def main() -> int:
         "50",
     ]
 
-    if args.heuristic_only:
-        cmd.append("--heuristic-only")
-    else:
-        cmd.extend(
-            [
-                "--model-path",
-                args.model_path,
-                "--tensor-parallel-size",
-                str(args.tensor_parallel_size),
-                "--gpu-memory-utilization",
-                str(args.gpu_memory_utilization),
-                "--max-model-len",
-                str(args.max_model_len),
-                "--batch-size",
-                str(args.batch_size),
-                "--hf-home",
-                args.hf_home,
-                "--enforce-eager",
-            ]
-        )
+    cmd.extend(
+        [
+            "--model-path",
+            args.model_path,
+            "--tensor-parallel-size",
+            str(args.tensor_parallel_size),
+            "--gpu-memory-utilization",
+            str(args.gpu_memory_utilization),
+            "--max-model-len",
+            str(args.max_model_len),
+            "--batch-size",
+            str(args.batch_size),
+            "--hf-home",
+            args.hf_home,
+            "--enforce-eager",
+        ]
+    )
 
     return subprocess.call(cmd)
 

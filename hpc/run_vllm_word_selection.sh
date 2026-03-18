@@ -25,10 +25,10 @@ BATCH_SIZE="${BATCH_SIZE:-32}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if [[ "$RUN_MODE" == "preview" ]]; then
-  OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_words_spar_preview50.json}"
+  OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_grounded_schema_spar_preview50.json}"
   EXTRA_ARGS=(--max-records-per-file 50)
 elif [[ "$RUN_MODE" == "full" ]]; then
-  OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_words_spar_full_llm.json}"
+  OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_grounded_schema_spar_full_llm.json}"
   EXTRA_ARGS=()
 else
   echo "Unsupported RUN_MODE: $RUN_MODE" >&2
@@ -58,7 +58,7 @@ singularity exec --nv \
   env HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
       VLLM_LOGGING_LEVEL="$VLLM_LOGGING_LEVEL" NCCL_DEBUG="$NCCL_DEBUG" \
       VLLM_ENABLE_CUDA_COMPATIBILITY=1 \
-  "$PYTHON_BIN" "$PROJECT_DIR/scripts/select_spatial_words.py" \
+  "$PYTHON_BIN" "$PROJECT_DIR/scripts/select_spatial_grounded_schema_llm_only.py" \
     --inputs "$INPUT_JSON" \
     --output "$OUTPUT_JSON" \
     --model-path "$MODEL_PATH" \
