@@ -57,6 +57,9 @@ EXTRACTION_RULES_PROMPT = (
     "'observer's perspective', or 'primary perspective' usually do NOT belong in grounded_mentions by themselves. "
     "14. A phrase may appear in more than one non-grounded field if needed, but do not add it to grounded_mentions unless it identifies a concrete visual referent. "
     "15. Exclude filler text that does not help grounding, spatial reasoning, viewpoint handling, or answer formatting."
+    "16. A plain visible object category also counts as a grounded mention, even without color markers, bbox markers, or coordinates. "
+    "17. If the task asks about object presence, object count, object identity, or object attributes, include the object name in grounded_mentions. "
+    "18. answer_constraints should contain only explicit answer-format restrictions, not the main question content and not schema instructions. "
 )
 
 FEW_SHOT_PROMPT = (
@@ -102,6 +105,13 @@ FEW_SHOT_PROMPT = (
     "\"geometric_constraints\": [\"bounding box\"], "
     "\"viewpoint_constraints\": [], "
     "\"answer_constraints\": [\"Provide its bounding box\"]}"
+
+    "Question: Based on the video I provided, how many electrical panels can be found in the room?\n"
+    "JSON: {\"grounded_mentions\": [\"electrical panels\", "
+    "\"spatial_relations\": [], "
+    "\"geometric_constraints\": [], "
+    "\"viewpoint_constraints\": [], "
+    "\"answer_constraints\": [\"how many\"]}\n\n"
 )
 
 

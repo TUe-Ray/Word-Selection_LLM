@@ -26,7 +26,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if [[ "$RUN_MODE" == "preview" ]]; then
   OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_grounded_schema_spar_preview50.json}"
-  EXTRA_ARGS=(--max-records-per-file 50)
+  EXTRA_ARGS=(--max-records-per-file 150)
 elif [[ "$RUN_MODE" == "full" ]]; then
   OUTPUT_JSON="${OUTPUT_JSON:-$PROJECT_DIR/selected_grounded_schema_spar_full_llm.json}"
   EXTRA_ARGS=()
