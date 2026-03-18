@@ -16,7 +16,7 @@ except ImportError:
 
 PLACEHOLDER_PATTERN = re.compile(r"<(?:image|video|audio)>", re.IGNORECASE)
 
-PROMPT_VERSION = "spatial_grounding_schema_v1"
+PROMPT_VERSION = "spatial_grounding_schema_v2"
 SCHEMA_KEYS = [
     "grounded_mentions",
     "spatial_relations",
@@ -26,11 +26,14 @@ SCHEMA_KEYS = [
 ]
 
 BASE_SYSTEM_PROMPT = (
-    "You extract the minimal COMPLETE text spans needed for visual grounding and spatial reasoning. "
-    "Return JSON only with exactly these keys: grounded_mentions, spatial_relations, geometric_constraints, viewpoint_constraints, answer_constraints. "
+    "You extract the minimal COMPLETE text spans needed for spatial grounding and spatial reasoning. "
+    "Return JSON only with exactly these keys: grounded_mentions, spatial_relations, geometric_constraints, "
+    "viewpoint_constraints, answer_constraints. "
     "Each value must be a JSON array of strings. "
     "grounded_mentions is the most important field. "
-    "It should contain complete grounded spans that link language to a visible object, point, bounding box, image, frame, region, or candidate answer region."
+    "grounded_mentions must contain only visually referable spans: phrases that directly identify a visible object, point, "
+    "bounding box, image, frame, region, or candidate answer region in the image(s). "
+    "Do not put abstract reasoning phrases into grounded_mentions just because they are important."
 )
 
 EXTRACTION_RULES_PROMPT = (
@@ -42,21 +45,63 @@ EXTRACTION_RULES_PROMPT = (
     "5. Keep phrases such as 'Object80 (red bbox)' as one grounded mention. "
     "6. Keep phrases such as 'the second image, [491, 448, 556, 664]' as one grounded mention. "
     "7. Put relation phrases like 'closest to the observer', 'left of', 'between', or 'in relation to' into spatial_relations. "
-    "8. Put geometry phrases like 'based on its center point', '3D center points', 'bounding box', 'Euclidean distance', or measurement units into geometric_constraints. "
-    "9. Put viewpoint or coordinate-frame phrases like 'from the observer\'s perspective', 'the observer\'s viewpoint is mirrored', or 'the first image as the primary perspective' into viewpoint_constraints. "
-    "10. Put answer-format instructions like 'Select the right option from the choices provided' or 'Your answer can only include one of the options A, B, C, or D' into answer_constraints. "
-    "11. Do not move a phrase into another field just to avoid duplication. A phrase may appear in more than one field if it genuinely serves both grounding and constraint roles. "
-    "12. Exclude filler text that does not help grounding, spatial reasoning, viewpoint handling, or answer formatting."
+    "8. Put geometry phrases like 'based on its center point', '3D center points', 'bounding box', 'Euclidean distance', 'depth', measurement units, "
+    "or 'world coordinate system' into geometric_constraints. "
+    "9. Put viewpoint or observer-frame phrases like 'from the observer's perspective', 'the observer's viewpoint is mirrored', "
+    "'the first image as the primary perspective', 'observer relocates to ...', or 'face ...' into viewpoint_constraints. "
+    "10. Put answer-format instructions like 'Select the right option from the choices provided' or "
+    "'Your answer can only include one of the options A, B, C, or D' into answer_constraints. "
+    "11. grounded_mentions must contain only concrete visual referents. "
+    "12. Do NOT put abstract geometric basis phrases into grounded_mentions unless they are attached to a specific grounded object phrase. "
+    "13. Therefore, phrases such as '3D center points', 'depth', 'Euclidean distance', 'world coordinate system', "
+    "'observer's perspective', or 'primary perspective' usually do NOT belong in grounded_mentions by themselves. "
+    "14. A phrase may appear in more than one non-grounded field if needed, but do not add it to grounded_mentions unless it identifies a concrete visual referent. "
+    "15. Exclude filler text that does not help grounding, spatial reasoning, viewpoint handling, or answer formatting."
 )
 
 FEW_SHOT_PROMPT = (
     "Examples:\n"
-    "Question: Calculate the shortest Euclidean distance in meters from the center of trash can (red point) to storage shelf (blue point). Calculate or judge based on the 3D center points of these objects. Type in exactly one number as your reply.\n"
-    "JSON: {\"grounded_mentions\": [\"the center of trash can (red point)\", \"storage shelf (blue point)\"], \"spatial_relations\": [\"shortest Euclidean distance\"], \"geometric_constraints\": [\"in meters\", \"3D center points\"], \"viewpoint_constraints\": [], \"answer_constraints\": [\"Type in exactly one number as your reply\"]}\n\n"
-    "Question: Which object, based on its center point, appears closest to the observer? Choose an image showing the object and mark it with the bounding box. Calculate or judge based on the 3D center points of these objects. The observer’s viewpoint is mirrored by establishing the first image as the primary perspective. Select the right option from the choices provided. A. the first image, [330, 548, 387, 710] B. the third image, [619, 508, 881, 934] C. the second image, [491, 448, 556, 664] D. the first image, [36, 521, 119, 724] Your answer can only include one of the options A, B, C, or D.\n"
-    "JSON: {\"grounded_mentions\": [\"the bounding box\", \"the first image, [330, 548, 387, 710]\", \"the third image, [619, 508, 881, 934]\", \"the second image, [491, 448, 556, 664]\", \"the first image, [36, 521, 119, 724]\"], \"spatial_relations\": [\"closest to the observer\"], \"geometric_constraints\": [\"based on its center point\", \"3D center points\", \"bounding box\"], \"viewpoint_constraints\": [\"the observer’s viewpoint is mirrored\", \"the first image as the primary perspective\"], \"answer_constraints\": [\"Select the right option from the choices provided\", \"Your answer can only include one of the options A, B, C, or D\"]}\n\n"
+    "Question: Calculate the shortest Euclidean distance in meters from the center of trash can (red point) to storage shelf (blue point). "
+    "Calculate or judge based on the 3D center points of these objects. Type in exactly one number as your reply.\n"
+    "JSON: {\"grounded_mentions\": [\"the center of trash can (red point)\", \"storage shelf (blue point)\"], "
+    "\"spatial_relations\": [\"shortest Euclidean distance\"], "
+    "\"geometric_constraints\": [\"in meters\", \"3D center points\"], "
+    "\"viewpoint_constraints\": [], "
+    "\"answer_constraints\": [\"Type in exactly one number as your reply\"]}\n\n"
+
+    "Question: Which object, based on its center point, appears closest to the observer? Choose an image showing the object and mark it with the bounding box. "
+    "Calculate or judge based on the 3D center points of these objects. The observer’s viewpoint is mirrored by establishing the first image as the primary perspective. "
+    "Select the right option from the choices provided. "
+    "A. the first image, [330, 548, 387, 710] "
+    "B. the third image, [619, 508, 881, 934] "
+    "C. the second image, [491, 448, 556, 664] "
+    "D. the first image, [36, 521, 119, 724] "
+    "Your answer can only include one of the options A, B, C, or D.\n"
+    "JSON: {\"grounded_mentions\": [\"the bounding box\", \"the first image, [330, 548, 387, 710]\", "
+    "\"the third image, [619, 508, 881, 934]\", \"the second image, [491, 448, 556, 664]\", "
+    "\"the first image, [36, 521, 119, 724]\"], "
+    "\"spatial_relations\": [\"closest to the observer\"], "
+    "\"geometric_constraints\": [\"based on its center point\", \"3D center points\", \"bounding box\"], "
+    "\"viewpoint_constraints\": [\"the observer’s viewpoint is mirrored\", \"the first image as the primary perspective\"], "
+    "\"answer_constraints\": [\"Select the right option from the choices provided\", "
+    "\"Your answer can only include one of the options A, B, C, or D\"]}\n\n"
+
+    "Question: What changes in the observer’s perception of the spatial relationship between table (red bbox) and cloth (yellow bbox) "
+    "when observer relocates to picture (green bbox) and face tv remote (blue bbox)? "
+    "Calculate or judge based on the 3D center points of these objects. "
+    "Please use the world coordinate system to determine the up and down position relationship of objects.\n"
+    "JSON: {\"grounded_mentions\": [\"table (red bbox)\", \"cloth (yellow bbox)\", \"picture (green bbox)\", \"tv remote (blue bbox)\"], "
+    "\"spatial_relations\": [\"spatial relationship between table (red bbox) and cloth (yellow bbox)\", \"up and down position relationship of objects\"], "
+    "\"geometric_constraints\": [\"3D center points\", \"world coordinate system\"], "
+    "\"viewpoint_constraints\": [\"observer relocates to picture (green bbox)\", \"face tv remote (blue bbox)\"], "
+    "\"answer_constraints\": []}\n\n"
+
     "Question: Where is the object monitor, shown with a red bbox in the first image, located in the second image? Provide its bounding box.\n"
-    "JSON: {\"grounded_mentions\": [\"the object monitor, shown with a red bbox in the first image\", \"the second image\"], \"spatial_relations\": [\"located in\"], \"geometric_constraints\": [\"bounding box\"], \"viewpoint_constraints\": [], \"answer_constraints\": [\"Provide its bounding box\"]}"
+    "JSON: {\"grounded_mentions\": [\"the object monitor, shown with a red bbox in the first image\", \"the second image\"], "
+    "\"spatial_relations\": [\"located in\"], "
+    "\"geometric_constraints\": [\"bounding box\"], "
+    "\"viewpoint_constraints\": [], "
+    "\"answer_constraints\": [\"Provide its bounding box\"]}"
 )
 
 
