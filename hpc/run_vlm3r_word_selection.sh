@@ -24,16 +24,24 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.95}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 LIMIT="${LIMIT:-50}"
+PREVIEW_SIZE="${PREVIEW_SIZE:-50}"
 SUBSETS="${SUBSETS:-vsibench_train vstibench_train}"
 API_BASE="${API_BASE:-http://127.0.0.1:8000/v1}"
 VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
 VLLM_PORT="${VLLM_PORT:-8000}"
+SERVER_WAIT_SECONDS="${SERVER_WAIT_SECONDS:-900}"
+VLLM_LOG_FILE="${VLLM_LOG_FILE:-$LOG_DIR/vlm3r_vllm.log}"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$OUTPUT_DIR"
 
 echo "[runner] start_time=$(date '+%Y-%m-%d %H:%M:%S %Z')"
-echo "[runner] model_path=$MODEL_PATH tp_size=$TENSOR_PARALLEL_SIZE dataset_root=$DATASET_ROOT output_dir=$OUTPUT_DIR"
+echo "[runner] project_dir=$PROJECT_DIR"
+echo "[runner] dataset_root=$DATASET_ROOT"
+echo "[runner] output_dir=$OUTPUT_DIR"
+echo "[runner] model_path=$MODEL_PATH"
+echo "[runner] tp_size=$TENSOR_PARALLEL_SIZE"
+echo "[runner] api_base=$API_BASE"
 
 nvidia-smi
 
@@ -43,7 +51,7 @@ if ! singularity exec --nv \
   --bind "$PROJECT_DIR:$PROJECT_DIR" \
   "$CONTAINER" \
   bash -lc "command -v ${PYTHON_BIN}" >/dev/null 2>&1; then
-  echo "Python interpreter not found in container: ${PYTHON_BIN}" >&2
+  echo "[runner] Python interpreter not found in container: ${PYTHON_BIN}" >&2
   exit 1
 fi
 
@@ -54,6 +62,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+echo "[runner] starting local vLLM api server"
 singularity exec --nv \
   --bind /leonardo_work/EUHPC_D32_006:/leonardo_work/EUHPC_D32_006 \
   --bind /leonardo_scratch/fast/EUHPC_D32_006:/leonardo_scratch/fast/EUHPC_D32_006 \
@@ -63,21 +72,46 @@ singularity exec --nv \
   env HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
       VLLM_LOGGING_LEVEL="$VLLM_LOGGING_LEVEL" NCCL_DEBUG="$NCCL_DEBUG" \
       VLLM_ENABLE_CUDA_COMPATIBILITY=1 \
-  "$PYTHON_BIN" -m vllm.entrypoints.openai.api_server \
+  "$PYTHON_BIN" -u -m vllm.entrypoints.openai.api_server \
       --model "$MODEL_PATH" \
       --host "$VLLM_HOST" \
       --port "$VLLM_PORT" \
       --tensor-parallel-size "$TENSOR_PARALLEL_SIZE" \
       --max-model-len "$MAX_MODEL_LEN" \
       --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
-      > "$LOG_DIR/vlm3r_vllm.log" 2>&1 &
+      > "$VLLM_LOG_FILE" 2>&1 &
 VLLM_PID=$!
 
-echo "[runner] waiting for vLLM server..."
-until curl -fsS "$API_BASE/models" >/dev/null; do
+echo "[runner] vLLM pid=$VLLM_PID"
+echo "[runner] waiting up to ${SERVER_WAIT_SECONDS}s for server readiness"
+
+START_TS=$(date +%s)
+while true; do
+  if curl -fsS "$API_BASE/models" >/dev/null 2>&1; then
+    echo "[runner] vLLM server is ready"
+    break
+  fi
+
+  if ! kill -0 "$VLLM_PID" >/dev/null 2>&1; then
+    echo "[runner] vLLM process exited before readiness" >&2
+    echo "[runner] last lines from $VLLM_LOG_FILE:" >&2
+    tail -n 80 "$VLLM_LOG_FILE" >&2 || true
+    exit 1
+  fi
+
+  NOW_TS=$(date +%s)
+  ELAPSED=$((NOW_TS - START_TS))
+  if [[ "$ELAPSED" -ge "$SERVER_WAIT_SECONDS" ]]; then
+    echo "[runner] timeout waiting for vLLM server after ${ELAPSED}s" >&2
+    echo "[runner] last lines from $VLLM_LOG_FILE:" >&2
+    tail -n 80 "$VLLM_LOG_FILE" >&2 || true
+    exit 1
+  fi
+
   sleep 5
 done
 
+echo "[runner] launching VLM-3R word-selection pipeline"
 singularity exec --nv \
   --bind /leonardo_work/EUHPC_D32_006:/leonardo_work/EUHPC_D32_006 \
   --bind /leonardo_scratch/fast/EUHPC_D32_006:/leonardo_scratch/fast/EUHPC_D32_006 \
@@ -93,6 +127,7 @@ singularity exec --nv \
     --model "$MODEL_PATH" \
     --api-base "$API_BASE" \
     --limit "$LIMIT" \
+    --preview-size "$PREVIEW_SIZE" \
     --subsets $SUBSETS
 
-echo "Saved output to: $OUTPUT_DIR"
+echo "[runner] saved output to: $OUTPUT_DIR"
