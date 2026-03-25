@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
-DATASET_ROOT="${DATASET_ROOT:-$ROOT_DIR/VLM-3R-DATA}"
+DATASET_ROOT="/leonardo_scratch/fast/EUHPC_D32_006/data/vlm3r/VLM-3R-DATA"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/artifacts/vlm3r_word_selection}"
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}"
 API_BASE="${API_BASE:-http://127.0.0.1:8000/v1}"

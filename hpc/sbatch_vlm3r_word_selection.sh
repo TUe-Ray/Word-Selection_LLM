@@ -28,7 +28,7 @@ if [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
 fi
 
 export PYTHON_BIN="${PYTHON_BIN:-python}"
-export DATASET_ROOT="${DATASET_ROOT:-$ROOT_DIR/VLM-3R-DATA}"
+export DATASET_ROOT="/leonardo_scratch/fast/EUHPC_D32_006/data/vlm3r/VLM-3R-DATA"
 export OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/artifacts/vlm3r_word_selection}"
 export MODEL_NAME="${MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}"
 export SUBSETS="${SUBSETS:-vsibench_train vstibench_train}"
