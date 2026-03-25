@@ -25,6 +25,9 @@ GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.95}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 LIMIT="${LIMIT:-50}"
 SUBSETS="${SUBSETS:-vsibench_train vstibench_train}"
+API_BASE="${API_BASE:-http://127.0.0.1:8000/v1}"
+VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
+VLLM_PORT="${VLLM_PORT:-8000}"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$OUTPUT_DIR"
@@ -44,6 +47,37 @@ if ! singularity exec --nv \
   exit 1
 fi
 
+cleanup() {
+  if [[ -n "${VLLM_PID:-}" ]]; then
+    kill "$VLLM_PID" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+singularity exec --nv \
+  --bind /leonardo_work/EUHPC_D32_006:/leonardo_work/EUHPC_D32_006 \
+  --bind /leonardo_scratch/fast/EUHPC_D32_006:/leonardo_scratch/fast/EUHPC_D32_006 \
+  --bind "$PROJECT_DIR:$PROJECT_DIR" \
+  --bind /dev/shm:/dev/shm \
+  "$CONTAINER" \
+  env HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+      VLLM_LOGGING_LEVEL="$VLLM_LOGGING_LEVEL" NCCL_DEBUG="$NCCL_DEBUG" \
+      VLLM_ENABLE_CUDA_COMPATIBILITY=1 \
+  "$PYTHON_BIN" -m vllm.entrypoints.openai.api_server \
+      --model "$MODEL_PATH" \
+      --host "$VLLM_HOST" \
+      --port "$VLLM_PORT" \
+      --tensor-parallel-size "$TENSOR_PARALLEL_SIZE" \
+      --max-model-len "$MAX_MODEL_LEN" \
+      --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
+      > "$LOG_DIR/vlm3r_vllm.log" 2>&1 &
+VLLM_PID=$!
+
+echo "[runner] waiting for vLLM server..."
+until curl -fsS "$API_BASE/models" >/dev/null; do
+  sleep 5
+done
+
 singularity exec --nv \
   --bind /leonardo_work/EUHPC_D32_006:/leonardo_work/EUHPC_D32_006 \
   --bind /leonardo_scratch/fast/EUHPC_D32_006:/leonardo_scratch/fast/EUHPC_D32_006 \
@@ -57,6 +91,7 @@ singularity exec --nv \
     --dataset-root "$DATASET_ROOT" \
     --output-dir "$OUTPUT_DIR" \
     --model "$MODEL_PATH" \
+    --api-base "$API_BASE" \
     --limit "$LIMIT" \
     --subsets $SUBSETS
 
