@@ -10,17 +10,18 @@
 #SBATCH --time=00:30:00
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_dbg
-#SBATCH --output=logs/word_selection/%x_%j.out
-#SBATCH --error=logs/word_selection/%x_%j.err
+#SBATCH --output=/leonardo/home/userexternal/shuang00/Word-Selection_LLM/logs/word_selection/%x_%j.out
+#SBATCH --error=/leonardo/home/userexternal/shuang00/Word-Selection_LLM/logs/word_selection/%x_%j.err
 #SBATCH --exclude=lrdn0249,lrdn0612,lrdn0568,lrdn2400,lrdn0288,lrdn0418,lrdn0119,lrdn0159,lrdn0080,lrdn0868,lrdn0808,lrdn0182,lrdn0680,lrdn0831,lrdn0084,lrdn0088,lrdn0186
 #SBATCH --exclusive
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="/leonardo/home/userexternal/shuang00/Word-Selection_LLM"
 cd "$ROOT_DIR"
 
-mkdir -p logs/word_selection
+export LOG_DIR="${LOG_DIR:-$ROOT_DIR/logs/word_selection}"
+mkdir -p "$LOG_DIR"
 
 if [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
   source "$HOME/miniconda3/etc/profile.d/conda.sh"
