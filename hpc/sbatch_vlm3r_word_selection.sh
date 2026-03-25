@@ -1,63 +1,39 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# Example:
+#   sbatch hpc/sbatch_vlm3r_word_selection.sh
+
+#SBATCH --job-name=vlm3r-full
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=4
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=32
+#SBATCH --time=10:00:00
+#SBATCH --partition=boost_usr_prod
+#SBATCH --qos=normal
+#SBATCH --output=logs/word_selection/%x_%j.out
+#SBATCH --error=logs/word_selection/%x_%j.err
+#SBATCH --exclude=lrdn0249,lrdn0612,lrdn0568,lrdn2400,lrdn0288,lrdn0418,lrdn0119,lrdn0159,lrdn0080,lrdn0868,lrdn0808,lrdn0182,lrdn0680,lrdn0831,lrdn0084,lrdn0088,lrdn0186
+#SBATCH --exclusive
+
 set -euo pipefail
 
-ROOT_DIR="/leonardo/home/userexternal/shuang00/Word-Selection_LLM"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
 
-PYTHON_BIN="${PYTHON_BIN:-python}"
-DATASET_ROOT="${DATASET_ROOT:-/leonardo_scratch/fast/EUHPC_D32_006/data/vlm3r/VLM-3R-DATA}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/artifacts/vlm3r_word_selection}"
-LOG_DIR="${LOG_DIR:-$ROOT_DIR/logs/word_selection}"
-MODEL_NAME="${MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}"
-API_BASE="${API_BASE:-http://127.0.0.1:8000/v1}"
-API_KEY="${API_KEY:-EMPTY}"
-SUBSETS="${SUBSETS:-vsibench_train vstibench_train}"
-PREVIEW_SIZE="${PREVIEW_SIZE:-50}"
-LIMIT="${LIMIT:-0}"
-TEMPERATURE="${TEMPERATURE:-0}"
-MAX_TOKENS="${MAX_TOKENS:-128}"
-TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-180}"
-START_VLLM="${START_VLLM:-0}"
-VLLM_PORT="${VLLM_PORT:-8000}"
-VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
-GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
-TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
-
+export LOG_DIR="${LOG_DIR:-$ROOT_DIR/logs/word_selection}"
 mkdir -p "$LOG_DIR"
 
-cleanup() {
-  if [[ -n "${VLLM_PID:-}" ]]; then
-    kill "$VLLM_PID" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup EXIT
+export PYTHON_BIN="${PYTHON_BIN:-python}"
+export DATASET_ROOT="${DATASET_ROOT:-$ROOT_DIR/VLM-3R-DATA}"
+export OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/artifacts/vlm3r_word_selection}"
+export MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
+export SUBSETS="${SUBSETS:-vsibench_train vstibench_train}"
+export START_VLLM="${START_VLLM:-1}"
+export VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
+export VLLM_PORT="${VLLM_PORT:-8000}"
+export API_BASE="${API_BASE:-http://127.0.0.1:8000/v1}"
+export TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-4}"
+export SINGULARITY_BIN="${SINGULARITY_BIN:-singularity}"
+export SIF_IMAGE="${SIF_IMAGE:-}"
 
-if [[ "$START_VLLM" == "1" ]]; then
-  echo "Starting vLLM server for $MODEL_NAME"
-  vllm serve "$MODEL_NAME" \
-    --host "$VLLM_HOST" \
-    --port "$VLLM_PORT" \
-    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
-    --max-model-len "$MAX_MODEL_LEN" \
-    --tensor-parallel-size "$TENSOR_PARALLEL_SIZE" \
-    > "$LOG_DIR/vlm3r_vllm.log" 2>&1 &
-  VLLM_PID=$!
-
-  echo "Waiting for vLLM server..."
-  until curl -fsS "http://$VLLM_HOST:$VLLM_PORT/v1/models" >/dev/null; do
-    sleep 5
-  done
-fi
-
-"$PYTHON_BIN" "$ROOT_DIR/scripts/vlm3r_word_selection_pipeline.py" \
-  --dataset-root "$DATASET_ROOT" \
-  --output-dir "$OUTPUT_DIR" \
-  --model "$MODEL_NAME" \
-  --api-base "$API_BASE" \
-  --api-key "$API_KEY" \
-  --preview-size "$PREVIEW_SIZE" \
-  --limit "$LIMIT" \
-  --temperature "$TEMPERATURE" \
-  --max-tokens "$MAX_TOKENS" \
-  --timeout "$TIMEOUT_SECONDS" \
-  --subsets $SUBSETS
+bash "$ROOT_DIR/hpc/run_vlm3r_word_selection.sh"
