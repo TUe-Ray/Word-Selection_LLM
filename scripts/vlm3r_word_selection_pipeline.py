@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 import json
+import math
 import sys
 import time
 import urllib.error
@@ -123,6 +126,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--preview-size", type=int, default=50)
     parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--select-only", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -285,6 +289,157 @@ def clean_word_list(value: Any) -> list[str]:
     return cleaned
 
 
+def format_duration(seconds: float | None) -> str:
+    if seconds is None or not math.isfinite(seconds):
+        return "--:--:--"
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours >= 24:
+        days, hours = divmod(hours, 24)
+        return f"{days}d {hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+class ProgressPrinter:
+    def __init__(
+        self,
+        *,
+        total: int,
+        initial_done: int,
+        report_every: int = 100,
+        report_interval_seconds: float = 30.0,
+    ) -> None:
+        self.total = total
+        self.initial_done = initial_done
+        self.current_done = initial_done
+        self.run_completed = 0
+        self.run_errors = 0
+        self.start_ts = time.time()
+        self.last_report_ts = self.start_ts
+        self.report_every = max(1, report_every)
+        self.report_interval_seconds = report_interval_seconds
+
+    def _build_line(self, *, final: bool = False) -> str:
+        elapsed = time.time() - self.start_ts
+        pct = (self.current_done / self.total * 100.0) if self.total else 100.0
+        width = 24
+        filled = min(width, int(width * self.current_done / self.total)) if self.total else width
+        bar = "#" * filled + "-" * (width - filled)
+        rate = (self.run_completed / elapsed) if elapsed > 0 else 0.0
+        rate_per_hour = rate * 3600.0
+        remaining = max(0, self.total - self.current_done)
+        eta_seconds = (remaining / rate) if rate > 0 else None
+        finish_at = (
+            datetime.now().astimezone().replace(microsecond=0) + timedelta(seconds=eta_seconds)
+            if eta_seconds is not None
+            else None
+        )
+        status = "done" if final else "progress"
+        finish_text = finish_at.isoformat(sep=" ") if finish_at else "unknown"
+        return (
+            f"[{status}] [{bar}] {self.current_done}/{self.total} ({pct:5.2f}%) | "
+            f"new={self.run_completed} | errors={self.run_errors} | "
+            f"rate={rate_per_hour:,.1f}/h | elapsed={format_duration(elapsed)} | "
+            f"eta={format_duration(eta_seconds)} | finish={finish_text}"
+        )
+
+    def maybe_report(self) -> None:
+        now = time.time()
+        should_report = (
+            self.run_completed == 0
+            or self.run_completed % self.report_every == 0
+            or (now - self.last_report_ts) >= self.report_interval_seconds
+        )
+        if should_report:
+            print(self._build_line(), flush=True)
+            self.last_report_ts = now
+
+    def record_success(self) -> None:
+        self.current_done += 1
+        self.run_completed += 1
+        self.maybe_report()
+
+    def record_error(self) -> None:
+        self.run_errors += 1
+        self.run_completed += 1
+        self.maybe_report()
+
+    def report_initial(self, pending: int) -> None:
+        print(
+            f"[progress] resume_done={self.initial_done} | pending={pending} | total={self.total}",
+            flush=True,
+        )
+        if pending == 0:
+            print(self._build_line(final=True), flush=True)
+
+    def report_final(self) -> None:
+        print(self._build_line(final=True), flush=True)
+
+
+def select_single_row(
+    row: dict[str, Any],
+    *,
+    chat_url: str,
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    api_key: str,
+    timeout: int,
+) -> tuple[str, dict[str, Any]]:
+    question = row.get("question", "").strip()
+    if not question:
+        return "error", {"id": row["id"], "question": question, "error": "missing_question"}
+
+    payload = {
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "messages": [
+            {
+                "role": "user",
+                "content": PROMPT_TEMPLATE.format(
+                    subset=row.get("subset", ""),
+                    question_type=row.get("question_type", ""),
+                    question=question,
+                ),
+            }
+        ],
+    }
+
+    try:
+        raw = post_json(chat_url, payload, api_key=api_key, timeout=timeout)
+        response_payload = json.loads(raw)
+        content = response_payload["choices"][0]["message"]["content"]
+        parsed = extract_json_object(content)
+        visible_grounded_words = clean_word_list(parsed.get("visible_grounded_words", []))
+        reasoning_words = clean_word_list(parsed.get("reasoning_words", []))
+        if not visible_grounded_words and not reasoning_words:
+            selected_words = clean_word_list(parsed.get("selected_words", []))
+            if not selected_words:
+                raise ValueError("no usable selected words returned")
+            visible_grounded_words = selected_words
+        selected_words = []
+        for item in visible_grounded_words + reasoning_words:
+            if item not in selected_words:
+                selected_words.append(item)
+        result = {
+            **row,
+            "visible_grounded_words": visible_grounded_words,
+            "reasoning_words": reasoning_words,
+            "selected_words": selected_words,
+            "why": str(parsed.get("why", "")).strip(),
+            "raw_response": content,
+        }
+        return "success", result
+    except Exception as exc:
+        return "error", {
+            "id": row["id"],
+            "question": question,
+            "error": str(exc),
+        }
+
+
 def run_selection(
     rows: list[dict[str, Any]],
     output_dir: Path,
@@ -294,6 +449,7 @@ def run_selection(
     temperature: float,
     max_tokens: int,
     timeout: int,
+    concurrency: int,
     resume: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     selected_path = output_dir / "selected_words.jsonl"
@@ -313,6 +469,8 @@ def run_selection(
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     chat_url = api_base.rstrip("/") + "/chat/completions"
+    pending_rows = [row for row in rows if row["id"] not in existing_ids]
+    progress = ProgressPrinter(total=len(rows), initial_done=len(existing_ids))
 
     selected_path.parent.mkdir(parents=True, exist_ok=True)
     success_mode = "a" if resume and selected_path.exists() else "w"
@@ -321,67 +479,58 @@ def run_selection(
     with selected_path.open(success_mode, encoding="utf-8") as success_handle, errors_path.open(
         error_mode, encoding="utf-8"
     ) as error_handle:
-        for row in rows:
-            if row["id"] in existing_ids:
-                continue
-            question = row.get("question", "").strip()
-            if not question:
-                error = {"id": row["id"], "error": "missing_question"}
-                errors.append(error)
-                error_handle.write(json.dumps(error, ensure_ascii=False) + "\n")
-                continue
-            payload = {
-                "model": model,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": PROMPT_TEMPLATE.format(
-                            subset=row.get("subset", ""),
-                            question_type=row.get("question_type", ""),
-                            question=question,
-                        ),
-                    }
-                ],
-            }
-            try:
-                raw = post_json(chat_url, payload, api_key=api_key, timeout=timeout)
-                response_payload = json.loads(raw)
-                content = response_payload["choices"][0]["message"]["content"]
-                parsed = extract_json_object(content)
-                visible_grounded_words = clean_word_list(parsed.get("visible_grounded_words", []))
-                reasoning_words = clean_word_list(parsed.get("reasoning_words", []))
-                if not visible_grounded_words and not reasoning_words:
-                    selected_words = clean_word_list(parsed.get("selected_words", []))
-                    if not selected_words:
-                        raise ValueError("no usable selected words returned")
-                    visible_grounded_words = selected_words
-                selected_words = []
-                for item in visible_grounded_words + reasoning_words:
-                    if item not in selected_words:
-                        selected_words.append(item)
-                result = {
-                    **row,
-                    "visible_grounded_words": visible_grounded_words,
-                    "reasoning_words": reasoning_words,
-                    "selected_words": selected_words,
-                    "why": str(parsed.get("why", "")).strip(),
-                    "raw_response": content,
-                }
-                results.append(result)
-                success_handle.write(json.dumps(result, ensure_ascii=False) + "\n")
-                success_handle.flush()
-            except Exception as exc:
-                error = {
-                    "id": row["id"],
-                    "question": question,
-                    "error": str(exc),
-                }
-                errors.append(error)
-                error_handle.write(json.dumps(error, ensure_ascii=False) + "\n")
-                error_handle.flush()
-            time.sleep(0.01)
+        progress.report_initial(len(pending_rows))
+        max_workers = max(1, concurrency)
+        if max_workers == 1:
+            for row in pending_rows:
+                status, payload = select_single_row(
+                    row,
+                    chat_url=chat_url,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    api_key=api_key,
+                    timeout=timeout,
+                )
+                if status == "success":
+                    results.append(payload)
+                    success_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                    success_handle.flush()
+                    progress.record_success()
+                else:
+                    errors.append(payload)
+                    error_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                    error_handle.flush()
+                    progress.record_error()
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        select_single_row,
+                        row,
+                        chat_url=chat_url,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        api_key=api_key,
+                        timeout=timeout,
+                    )
+                    for row in pending_rows
+                ]
+                for future in as_completed(futures):
+                    status, payload = future.result()
+                    if status == "success":
+                        results.append(payload)
+                        success_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                        success_handle.flush()
+                        progress.record_success()
+                    else:
+                        errors.append(payload)
+                        error_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                        error_handle.flush()
+                        progress.record_error()
+        if pending_rows:
+            progress.report_final()
     return results, errors
 
 
@@ -434,6 +583,7 @@ def main() -> int:
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         timeout=args.timeout,
+        concurrency=args.concurrency,
         resume=args.resume,
     )
 

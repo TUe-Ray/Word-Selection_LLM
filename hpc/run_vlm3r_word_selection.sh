@@ -11,8 +11,8 @@ export MODEL_PATH="${MODEL_PATH:-/leonardo_work/EUHPC_D32_006/vllm_model/Qwen3-3
 export HF_HOME="${HF_HOME:-/leonardo_work/EUHPC_D32_006/vllm_model/hf_cache}"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-DEBUG}"
-export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
+export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-INFO}"
+export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export VLLM_ENABLE_CUDA_COMPATIBILITY=1
 
 PROJECT_DIR="${PROJECT_DIR:-$PWD}"
@@ -31,17 +31,33 @@ VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
 VLLM_PORT="${VLLM_PORT:-8000}"
 SERVER_WAIT_SECONDS="${SERVER_WAIT_SECONDS:-900}"
 VLLM_LOG_FILE="${VLLM_LOG_FILE:-$LOG_DIR/vlm3r_vllm.log}"
+AUTO_RESUME="${AUTO_RESUME:-1}"
+SELECTION_CONCURRENCY="${SELECTION_CONCURRENCY:-8}"
+SELECTED_WORDS_PATH="$OUTPUT_DIR/selected_words.jsonl"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$OUTPUT_DIR"
+
+RESUME_ARGS=()
+if [[ "$AUTO_RESUME" == "1" && -s "$SELECTED_WORDS_PATH" ]]; then
+  RESUME_ARGS+=(--resume)
+fi
 
 echo "[runner] start_time=$(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "[runner] project_dir=$PROJECT_DIR"
 echo "[runner] dataset_root=$DATASET_ROOT"
 echo "[runner] output_dir=$OUTPUT_DIR"
+echo "[runner] auto_resume=$AUTO_RESUME"
+echo "[runner] selected_words_path=$SELECTED_WORDS_PATH"
 echo "[runner] model_path=$MODEL_PATH"
 echo "[runner] tp_size=$TENSOR_PARALLEL_SIZE"
 echo "[runner] api_base=$API_BASE"
+echo "[runner] selection_concurrency=$SELECTION_CONCURRENCY"
+if [[ ${#RESUME_ARGS[@]} -gt 0 ]]; then
+  echo "[runner] resume_mode=enabled"
+else
+  echo "[runner] resume_mode=disabled"
+fi
 
 nvidia-smi
 
@@ -128,6 +144,8 @@ singularity exec --nv \
     --api-base "$API_BASE" \
     --limit "$LIMIT" \
     --preview-size "$PREVIEW_SIZE" \
+    --concurrency "$SELECTION_CONCURRENCY" \
+    "${RESUME_ARGS[@]}" \
     --subsets $SUBSETS
 
 echo "[runner] saved output to: $OUTPUT_DIR"

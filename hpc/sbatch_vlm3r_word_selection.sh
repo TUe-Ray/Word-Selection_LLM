@@ -6,7 +6,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
-#SBATCH --time=10:00:00
+#SBATCH --time=20:00:00
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=normal
 #SBATCH --output=/leonardo/home/userexternal/shuang00/Word-Selection_LLM/logs/word_selection/%x_%j.out

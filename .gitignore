@@ -47,3 +47,4 @@ selected_words_debug.json
 *.json
 
 VLM-3R-DATA/
+.codex
